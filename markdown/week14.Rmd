@@ -1,0 +1,265 @@
+---
+title: "Week 14: SQL Databases"
+author: "Jessica Butts"
+date: "Due 4/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+
+```{r library}
+library(tidyverse)  # For data manipulation and cleaning
+library(RMariaDB)   # To connect to database and run SQL commands
+```
+
+# Data Import and Cleaning
+
+The data was imported two different ways. In the first approach, the data from three different tables in a database were combined and then returned to R. In the second approach, we fetched each individual table from the SQL database and then combined them using tidyverse approaches. After both approaches were completed, we checked to see that the two tables are the same. 
+
+Then we used the data set from the first approach to clean and prepare for analysis. This included the following steps:
+
+- Replacing all "NA" and "Refused" strings with an *NA* value
+- Converting all survey responses to an ordered factor and then converting them to numeric
+- Converting all social media use variables to binary indicators of whether the platform was used or not
+- Turning age into a factor variable
+- Removing all cases where all four survey responses were missing
+- Calculating the mean privacy score from the survey responses
+- Calculating the number of social media platforms used
+- Selecting only the variables needed for analysis
+- Removing any cases that had a missing value for one or more of those variables
+- Turning the final table into a tibble
+
+```{r import, eval= FALSE}
+# Set-up the connection to the database
+con <- dbConnect(MariaDB(),
+                 user = "#####",
+                 password = "#####",
+                 host = "tntlab.org")
+
+# Show which databases are present
+db <- dbGetQuery(con, "SHOW databases")
+db
+
+# Want to use the rnlander_8960 database, so submit use statement;
+dbExecute(con, "USE rnlander_8960")
+
+# Explore which tables are present in the database
+tables <- dbGetQuery(con, "SHOW tables")
+tables
+
+# Now look at each table to see which variables are present in each table
+#  Since only interested in what variables there are, limit to first 10 rows
+#  Also interested in how many rows are in each table, so run count statement
+demos <- dbGetQuery(con, "SELECT * FROM demos LIMIT 10;")
+demos
+demos_count <- dbGetQuery(con, "SELECT COUNT(*) FROM demos;")
+demos_count
+
+responses <- dbGetQuery(con, "SELECT * FROM responses LIMIT 10;")
+responses
+resp_count <- dbGetQuery(con, "SELECT COUNT(*) FROM responses;")
+resp_count
+
+socialmedia <- dbGetQuery(con, "SELECT * FROM socialmedia LIMIT 10;")
+socialmedia
+social_count <- dbGetQuery(con, "SELECT COUNT(*) FROM socialmedia;")
+social_count
+
+# For the social media table, there doesn't appear to be a participant id, 
+#  so I want to look at more of this table.
+socialmedia.full <- dbGetQuery(con, "SELECT * FROM socialmedia;")
+socialmedia.full
+# It appears that there are 56 patterns of social media use,
+#  and each participant has 1 of these patterns associated with them.
+
+# Based on these tables, we want the following variables from each table
+#  demos: participant_num, age
+#  responses: ident, smu_code, rec_events, rec_products, rec_friends, rec_political
+#  socialmedia: code, remaining variables
+
+# Approach 1: Use SQL to create the final data set
+
+# Try to join the demos table with the responses table
+# Left join on the demos table because it should contain all participants
+data <- dbGetQuery(con, 
+                   "SELECT participant_num, age 
+                      FROM demos
+                      LEFT JOIN responses 
+                      ON participant_num = ident;")
+head(data)
+
+# Realized that I needed to include the other variables in the select statement
+# Include ident to ensure matching correctly
+data <- dbGetQuery(con, 
+                   "SELECT participant_num, age, ident, 
+                           smu_code, rec_events, rec_products, rec_friends, rec_policial 
+                    FROM demos
+                    LEFT JOIN responses 
+                      ON participant_num = ident;")
+head(data)
+# Check that we have the expected number of participants
+nrow(data)
+
+# Previous join gave expected results, so now add in the social media use pattern
+#  and remove the ident column since it is redundant
+data <- dbGetQuery(con, 
+                   "SELECT participant_num, age, 
+                           smu_code, rec_events, rec_products, rec_friends, rec_policial,
+                           code, facebook, twitter, instagram, youtube, snapchat, other
+                      FROM demos
+                      LEFT JOIN responses 
+                        ON participant_num = ident
+                      LEFT JOIN socialmedia
+                        ON smu_code = code;")
+# Check that data is as expected 
+#   have all desired variables; code and smu_code seem to be matching; don't need code and smu_code
+head(data)
+
+# Previous command seemed to work, except for removing code from final data set since redundant
+#  also sort the table by participant number
+sql_tbl <- dbGetQuery(con, 
+                      "SELECT participant_num, age, 
+                              smu_code, rec_events, rec_products, rec_friends, rec_policial,
+                              facebook, twitter, instagram, youtube, snapchat, other
+                      FROM demos
+                      LEFT JOIN responses 
+                        ON participant_num = ident
+                      LEFT JOIN socialmedia
+                        ON smu_code = code
+                      ORDER BY participant_num;")
+head(sql_tbl, 10)
+
+# Approach #2: Import all tables from SQL and then combine in tidyverse
+
+# Import full tables with variables of interest
+demos.full <- dbGetQuery(con, "SELECT participant_num, age FROM demos;")
+responses.full <- dbGetQuery(con, "SELECT ident, smu_code, rec_events, rec_products, 
+                                          rec_friends, rec_policial 
+                                   FROM responses;")
+# already imported socialmedia.full above
+
+# Look at imported tables
+head(demos.full)
+head(responses.full)
+head(socialmedia.full)
+
+# Try joining just the demos and responses tables
+tidy_tbl <- demos.full %>%
+              left_join(responses.full, by = c("participant_num" = "ident"))
+# Check results
+head(tidy_tbl, 10)
+
+# Add in join on socialmedia and sort by participant id
+tidy_tbl <- demos.full %>%
+              left_join(responses.full, by = c("participant_num" = "ident")) %>%
+              left_join(socialmedia.full, by = c("smu_code" = "code")) %>%
+              arrange(participant_num)%>%
+              as_tibble()
+# Check results
+head(tidy_tbl, 10)
+
+# Check that both approaches yield equivalent results
+head(tidy_tbl)
+head(sql_tbl)
+sum(tidy_tbl != sql_tbl, na.rm = TRUE)
+
+# Close database connection
+dbDisconnect(con)
+
+# Now clean the data for analysis
+clean_tbl <- sql_tbl %>%
+                # Convert "NA" and "Refused" to missing
+                na_if("NA") %>%
+                na_if("Refused") %>%
+                # Create ordered factors for the survey responses
+                mutate(rec_events_fac = factor(rec_events, 
+                                               levels = c("Not acceptable at all",
+                                                          "Not very acceptable",
+                                                          "Somewhat acceptable",
+                                                          "Very acceptable"),
+                                               labels = c(1,2,3,4),
+                                               ordered = TRUE),
+                       rec_products_fac = factor(rec_products, 
+                                               levels = c("Not acceptable at all",
+                                                          "Not very acceptable",
+                                                          "Somewhat acceptable",
+                                                          "Very acceptable"),
+                                               labels = c(1,2,3,4),
+                                               ordered = TRUE),
+                       rec_friends_fac = factor(rec_friends,
+                                                levels = c("Not acceptable at all",
+                                                          "Not very acceptable",
+                                                          "Somewhat acceptable",
+                                                          "Very acceptable"),
+                                               labels = c(1,2,3,4),
+                                               ordered = TRUE),
+                       rec_policial_fac = factor(rec_policial, 
+                                                 levels = c("Not acceptable at all",
+                                                          "Not very acceptable",
+                                                          "Somewhat acceptable",
+                                                          "Very acceptable"),
+                                               labels = c(1,2,3,4),
+                                               ordered = TRUE),
+                       # Create binary variables for whether a person uses each social media service
+                       facebook_bin = facebook == "Facebook",
+                       twitter_bin = twitter == "Twitter",
+                       instagram_bin = instagram == "Instagran",
+                       youtube_bin = youtube == "YouTube",
+                       snapchat_bin = snapchat == "Snapchat",
+                       other_bin = other == "Other") %>%
+                mutate_at("age", .funs = factor) %>%
+                mutate_at(vars(ends_with("_fac")), .funs = as.numeric) %>%
+                # Remove rows that are missing all survey responses because 
+                # we can't use them to calculate a mean privacy score
+                filter(!(is.na(rec_events_fac) & is.na(rec_friends_fac) &
+                         is.na(rec_products_fac) & is.na(rec_policial_fac))) %>%
+                # Take mean of privacy survey questions
+                mutate(mean_privacy = rowMeans(select(., ends_with("fac")))) %>%
+                rowwise() %>%
+                # Count number of social media platforms a person has
+                mutate(num_social = sum(facebook_bin, 
+                                        twitter_bin, 
+                                        instagram_bin, 
+                                        youtube_bin,
+                                        snapchat_bin,
+                                        other_bin,
+                                        na.rm = TRUE)) %>%
+                select(age, mean_privacy, num_social) %>%
+                na.omit() %>%
+                as_tibble() 
+```
+
+# Analysis
+
+We first investigated whether there is a linear relationship between the number of social media platforms a person uses and that person's mean privacy score (calculated from 4 questions ranked from 1-4). A higher mean privacy score indicates the person has greater acceptance of privacy intrusions. The first model shows a statistically significant relationship between the variables of interest; for each additional social media platform used, the mean privacy score increases by 0.012 (p < 0.001).
+
+We then investigated whether this relationship changed by age group. We found that both age and the number of social media platforms used were significant predictors of mean privacy score, and this model almost doubles the adjusted $R^2$ value, so we prefer this second model. We see that for a fixed number of social media platforms used, the mean privacy score decreases more when the person is older versus younger suggesting that younger people are more accepting of privacy intrusions and older people less so. We also see that for a fixed age group, increasing the number of social media platforms used by 1 increases the mean privacy score by 0.11 which is about 10 times the size of the coefficient in the first model.
+
+```{r analysis}
+# Create Model with only the number of social media platforms used as a covariate
+lm.red <- lm(mean_privacy ~ num_social, data = clean_tbl)
+summary(lm.red)
+
+# Create model with age and number of social media platforms as covariates
+lm.full <- lm(mean_privacy ~ age + num_social, clean_tbl)
+summary(lm.full)
+```
+
+
+# Visualization
+
+The visualization of the second model shows that for all age groups, as the number of social media platforms increases, the mean privacy score also increases. That is those who use more social media platforms tend to accept more privacy intrusion. We can also see that people with more social media accounts tend to be younger, and those with fewer social media accounts tend to be older. 
+
+```{r visual}
+ggplot(clean_tbl, aes(x = num_social, y = mean_privacy, col = age)) +
+  geom_point(position = "jitter") + 
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(x = "Number of Social Media Platforms Used",
+       y = "Mean Privacy Score (1-4)",
+       color = "Age") + 
+  theme_minimal() 
+```
